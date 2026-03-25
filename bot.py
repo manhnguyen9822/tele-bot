@@ -8,13 +8,13 @@ import os
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
 
-# ===== TOKEN (ENV) =====
+# ===== TOKEN =====
 TOKEN = os.getenv("TOKEN")
 
-# ===== FILE EXCEL =====
+# ===== FILE =====
 FILE = "file.xlsx"
 
-# ===== CHUẨN HÓA TEXT =====
+# ===== NORMALIZE =====
 def normalize(text):
     text = str(text).lower()
     text = unicodedata.normalize('NFD', text)
@@ -77,6 +77,9 @@ def load_data():
             "options": options
         }
 
+        # DEBUG (có thể xoá sau)
+        print(question, "=>", item["abbr"])
+
         data.append(item)
 
     print(f"✅ Loaded {len(data)} câu hỏi")
@@ -90,16 +93,16 @@ def similarity(a, b):
 
 # ===== SEARCH =====
 def search(query):
-    query_norm = normalize(query).replace(" ", "")  # 🔥 hỗ trợ "c t t t"
-    words = normalize(query).split()
+    raw = normalize(query)
+    query_norm = raw.replace(" ", "")  # hỗ trợ "c t t t"
+    words = raw.split()
 
     # ===== ƯU TIÊN VIẾT TẮT =====
-    if len(query_norm) <= 6:
-        for item in data:
-            if query_norm == item["abbr"]:
-                return item
+    for item in data:
+        if query_norm == item["abbr"]:
+            return item
 
-    # ===== CHẶN INPUT NGẮN =====
+    # ===== CHẶN INPUT NGẮN (SAU KHI CHECK ABBR) =====
     if len(words) <= 2:
         return None
 
@@ -110,11 +113,11 @@ def search(query):
         score = 0
 
         # keyword
-        if item["keyword"] and query_norm == item["keyword"]:
+        if item["keyword"] and raw == item["keyword"]:
             return item
 
         # match toàn câu
-        score += similarity(query_norm, item["question_norm"]) * 2
+        score += similarity(raw, item["question_norm"]) * 2
 
         # match theo từ
         match_count = sum(1 for w in words if w in item["question_norm"])
@@ -125,7 +128,7 @@ def search(query):
         if any(w in item["question_norm"] for w in words[:2]):
             score += 0.3
 
-        # phạt ngắn
+        # phạt query ngắn
         if len(words) <= 3:
             score *= 0.7
 
