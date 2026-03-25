@@ -14,6 +14,13 @@ TOKEN = os.getenv("TOKEN")
 # ===== FILE =====
 FILE = "file.xlsx"
 
+# ===== STOP WORDS =====
+STOP_WORDS = {
+    "la", "va", "cua", "co", "trong", "cho", "mot", "cac",
+    "nhung", "duoc", "the", "nao", "sau", "day", "voi", "tu",
+    "den", "khi", "neu", "thi", "do", "nay", "kia", "gi", "nhu"
+}
+
 # ===== NORMALIZE =====
 def normalize(text):
     text = str(text).lower()
@@ -22,10 +29,17 @@ def normalize(text):
     text = re.sub(r'[^a-z0-9 ]', '', text)
     return text
 
-# ===== VIẾT TẮT =====
+# ===== VIẾT TẮT THÔNG MINH =====
 def get_abbr(text):
     words = normalize(text).split()
-    return ''.join(w[0] for w in words if w)
+
+    # bỏ stop words
+    filtered = [w for w in words if w not in STOP_WORDS]
+
+    if not filtered:
+        filtered = words
+
+    return ''.join(w[0] for w in filtered if w)
 
 # ===== XÓA HTML =====
 def clean_html(text):
@@ -72,13 +86,10 @@ def load_data():
             "keyword": normalize(row.get("keyword", "")),
             "question": question,
             "question_norm": normalize(question),
-            "abbr": get_abbr(question),  # 🔥 viết tắt
+            "abbr": get_abbr(question),  # 🔥 viết tắt thông minh
             "correct": correct_list,
             "options": options
         }
-
-        # DEBUG (có thể xoá sau)
-        print(question, "=>", item["abbr"])
 
         data.append(item)
 
@@ -94,15 +105,20 @@ def similarity(a, b):
 # ===== SEARCH =====
 def search(query):
     raw = normalize(query)
-    query_norm = raw.replace(" ", "")  # hỗ trợ "c t t t"
+    query_norm = raw.replace(" ", "")
     words = raw.split()
 
-    # ===== ƯU TIÊN VIẾT TẮT =====
+    # ===== ƯU TIÊN VIẾT TẮT (SMART MATCH) =====
     for item in data:
-        if query_norm == item["abbr"]:
+        abbr = item["abbr"]
+
+        if query_norm == abbr:
             return item
 
-    # ===== CHẶN INPUT NGẮN (SAU KHI CHECK ABBR) =====
+        if query_norm in abbr or abbr.startswith(query_norm):
+            return item
+
+    # ===== CHẶN NGẮN =====
     if len(words) <= 2:
         return None
 
@@ -112,23 +128,18 @@ def search(query):
     for item in data:
         score = 0
 
-        # keyword
         if item["keyword"] and raw == item["keyword"]:
             return item
 
-        # match toàn câu
         score += similarity(raw, item["question_norm"]) * 2
 
-        # match theo từ
         match_count = sum(1 for w in words if w in item["question_norm"])
         if words:
             score += (match_count / len(words)) * 1.5
 
-        # bonus
         if any(w in item["question_norm"] for w in words[:2]):
             score += 0.3
 
-        # phạt query ngắn
         if len(words) <= 3:
             score *= 0.7
 
