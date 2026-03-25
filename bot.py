@@ -8,18 +8,8 @@ import os
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
 
-# ===== TOKEN =====
 TOKEN = os.getenv("TOKEN")
-
-# ===== FILE =====
 FILE = "file.xlsx"
-
-# ===== STOP WORDS =====
-STOP_WORDS = {
-    "la","va","cua","co","trong","cho","mot","cac","nhung",
-    "duoc","the","nao","sau","day","voi","tu","den","khi",
-    "neu","thi","do","nay","kia","gi","nhu"
-}
 
 # ===== NORMALIZE =====
 def normalize(text):
@@ -33,24 +23,21 @@ def normalize(text):
 def clean_html(text):
     return re.sub(r'<.*?>', '', str(text))
 
-# ===== BUILD MULTI ABBR =====
-def build_abbrs(text):
-    words = normalize(text).split()
+# ===== TẠO ABBR CHỈ TỪ 5-7 TỪ ĐẦU =====
+def build_abbr(text):
+    text = normalize(text)
 
-    # full
-    abbr_full = ''.join(w[0] for w in words if w)
+    # 🔥 bỏ dấu phẩy (quan trọng)
+    text = text.replace(",", " ")
 
-    # bỏ stop words
-    filtered = [w for w in words if w not in STOP_WORDS]
-    abbr_filtered = ''.join(w[0] for w in filtered if w)
+    words = text.split()
 
-    # từ quan trọng (>=4 ký tự)
-    keywords = [w for w in filtered if len(w) >= 4]
-    if not keywords:
-        keywords = filtered
-    abbr_keywords = ''.join(w[0] for w in keywords if w)
+    # chỉ lấy 5-7 từ đầu
+    first_words = words[:7]
 
-    return {abbr_full, abbr_filtered, abbr_keywords}
+    abbr = ''.join(w[0] for w in first_words if w)
+
+    return abbr
 
 # ===== LOAD DATA =====
 def load_data():
@@ -75,7 +62,7 @@ def load_data():
 
         question = clean_html(row["Câu hỏi"])
 
-        # ===== MULTI ANSWER =====
+        # ===== ĐÁP ÁN =====
         correct_raw = str(row["Đáp án đúng"]).strip()
         correct_list = []
         parts = re.split(r"[,\s;]+", correct_raw)
@@ -91,7 +78,7 @@ def load_data():
         item = {
             "question": question,
             "question_norm": normalize(question),
-            "abbrs": build_abbrs(question),
+            "abbr": build_abbr(question),  # 🔥 chỉ 5-7 từ đầu
             "correct": correct_list,
             "options": options
         }
@@ -105,61 +92,26 @@ data = load_data()
 
 # ===== SEARCH =====
 def search(query):
-    raw = normalize(query)
-    q = raw.replace(" ", "")
-    words = raw.split()
-
-    # 🔥 chỉ lấy phần đầu để match viết tắt (fix ksdht)
-    q_short = q[:6]
+    q = normalize(query).replace(" ", "")
 
     best = None
     best_score = 0
 
-    # ===== 1. MATCH ABBR (CỰC QUAN TRỌNG) =====
+    # ===== MATCH ABBR =====
     for item in data:
-        for abbr in item["abbrs"]:
-            score = SequenceMatcher(None, q_short, abbr).ratio()
+        abbr = item["abbr"]
 
-            # match đầu câu (quan trọng nhất)
-            if abbr.startswith(q_short):
-                score += 0.7
+        score = SequenceMatcher(None, q, abbr).ratio()
 
-            # match prefix chính xác
-            if abbr[:len(q_short)] == q_short:
-                score += 0.7
-
-            # match chứa
-            if q_short in abbr:
-                score += 0.3
-
-            if score > best_score:
-                best_score = score
-                best = item
-
-    if best_score > 0.65:
-        return best
-
-    # ===== 2. CHẶN NGẮN =====
-    if len(words) <= 2:
-        return None
-
-    # ===== 3. MATCH CÂU =====
-    best = None
-    best_score = 0
-
-    for item in data:
-        question = item["question_norm"]
-
-        score = SequenceMatcher(None, raw, question).ratio() * 2
-
-        match_count = sum(1 for w in words if w in question)
-        score += (match_count / len(words)) * 2
+        # 🔥 match đầu câu cực mạnh
+        if abbr.startswith(q):
+            score += 1.0
 
         if score > best_score:
             best_score = score
             best = item
 
-    if best_score > 0.7:
+    if best_score > 0.6:
         return best
 
     return None
@@ -180,10 +132,11 @@ def format_msg(item):
 # ===== HANDLE =====
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
+
     result = search(text)
 
     if result is None:
-        await update.message.reply_text("⚠️ Nhập rõ hơn hoặc viết tắt (vd: cttt)")
+        await update.message.reply_text("⚠️ Gõ 5-7 chữ cái đầu (vd: ksdht)")
         return
 
     await update.message.reply_text(format_msg(result))
@@ -196,5 +149,5 @@ if __name__ == "__main__":
         app = ApplicationBuilder().token(TOKEN).build()
         app.add_handler(MessageHandler(filters.TEXT, handle))
 
-        print("🚀 Bot đang chạy...")
+        print("🚀 Bot chạy tối ưu 5-7 từ đầu...")
         app.run_polling()
