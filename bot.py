@@ -22,6 +22,11 @@ def normalize(text):
     text = re.sub(r'[^a-z0-9 ]', '', text)
     return text
 
+# ===== VIẾT TẮT =====
+def get_abbr(text):
+    words = normalize(text).split()
+    return ''.join(w[0] for w in words if w)
+
 # ===== XÓA HTML =====
 def clean_html(text):
     return re.sub(r'<.*?>', '', str(text))
@@ -50,6 +55,7 @@ def load_data():
 
         question = clean_html(row["Câu hỏi"])
 
+        # ===== MULTI ANSWER =====
         correct_raw = str(row["Đáp án đúng"]).strip()
         correct_list = []
         parts = re.split(r"[,\s;]+", correct_raw)
@@ -66,6 +72,7 @@ def load_data():
             "keyword": normalize(row.get("keyword", "")),
             "question": question,
             "question_norm": normalize(question),
+            "abbr": get_abbr(question),  # 🔥 viết tắt
             "correct": correct_list,
             "options": options
         }
@@ -83,9 +90,16 @@ def similarity(a, b):
 
 # ===== SEARCH =====
 def search(query):
-    query_norm = normalize(query)
-    words = query_norm.split()
+    query_norm = normalize(query).replace(" ", "")  # 🔥 hỗ trợ "c t t t"
+    words = normalize(query).split()
 
+    # ===== ƯU TIÊN VIẾT TẮT =====
+    if len(query_norm) <= 6:
+        for item in data:
+            if query_norm == item["abbr"]:
+                return item
+
+    # ===== CHẶN INPUT NGẮN =====
     if len(words) <= 2:
         return None
 
@@ -95,18 +109,23 @@ def search(query):
     for item in data:
         score = 0
 
+        # keyword
         if item["keyword"] and query_norm == item["keyword"]:
             return item
 
+        # match toàn câu
         score += similarity(query_norm, item["question_norm"]) * 2
 
+        # match theo từ
         match_count = sum(1 for w in words if w in item["question_norm"])
         if words:
             score += (match_count / len(words)) * 1.5
 
+        # bonus
         if any(w in item["question_norm"] for w in words[:2]):
             score += 0.3
 
+        # phạt ngắn
         if len(words) <= 3:
             score *= 0.7
 
@@ -141,7 +160,7 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if result is None:
         if len(text.split()) <= 2:
-            await update.message.reply_text("⚠️ Nhập rõ hơn (ít nhất 3-4 từ)")
+            await update.message.reply_text("⚠️ Nhập rõ hơn hoặc dùng viết tắt (vd: cttt)")
         else:
             await update.message.reply_text("❌ Không tìm thấy câu phù hợp")
         return
@@ -157,7 +176,7 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ===== RUN =====
 if __name__ == "__main__":
     if not TOKEN:
-        print("❌ Thiếu TOKEN (set trong Railway Variables)")
+        print("❌ Thiếu TOKEN")
     else:
         app = ApplicationBuilder().token(TOKEN).build()
         app.add_handler(MessageHandler(filters.TEXT, handle))
