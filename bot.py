@@ -8,15 +8,20 @@ import os
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
 
+# ===== TOKEN =====
 TOKEN = os.getenv("TOKEN")
+
+# ===== FILE =====
 FILE = "file.xlsx"
 
+# ===== STOP WORDS =====
 STOP_WORDS = {
     "la","va","cua","co","trong","cho","mot","cac","nhung",
     "duoc","the","nao","sau","day","voi","tu","den","khi",
-    "neu","thi","do","nay","kia","gi","nhu","cac","nhung"
+    "neu","thi","do","nay","kia","gi","nhu"
 }
 
+# ===== NORMALIZE =====
 def normalize(text):
     text = str(text).lower()
     text = unicodedata.normalize('NFD', text)
@@ -24,21 +29,22 @@ def normalize(text):
     text = re.sub(r'[^a-z0-9 ]', '', text)
     return text
 
+# ===== CLEAN HTML =====
 def clean_html(text):
     return re.sub(r'<.*?>', '', str(text))
 
-# ===== TẠO NHIỀU DẠNG VIẾT TẮT =====
+# ===== BUILD MULTI ABBR =====
 def build_abbrs(text):
     words = normalize(text).split()
 
-    # 1. full
+    # full
     abbr_full = ''.join(w[0] for w in words if w)
 
-    # 2. bỏ stop words
+    # bỏ stop words
     filtered = [w for w in words if w not in STOP_WORDS]
     abbr_filtered = ''.join(w[0] for w in filtered if w)
 
-    # 3. chỉ từ quan trọng (dài)
+    # từ quan trọng (>=4 ký tự)
     keywords = [w for w in filtered if len(w) >= 4]
     if not keywords:
         keywords = filtered
@@ -46,10 +52,14 @@ def build_abbrs(text):
 
     return {abbr_full, abbr_filtered, abbr_keywords}
 
+# ===== LOAD DATA =====
 def load_data():
+    if not os.path.exists(FILE):
+        print("❌ Không tìm thấy file.xlsx")
+        return []
+
     df = pd.read_excel(FILE)
     data = []
-
     letters = list(string.ascii_uppercase)
 
     for _, row in df.iterrows():
@@ -65,6 +75,7 @@ def load_data():
 
         question = clean_html(row["Câu hỏi"])
 
+        # ===== MULTI ANSWER =====
         correct_raw = str(row["Đáp án đúng"]).strip()
         correct_list = []
         parts = re.split(r"[,\s;]+", correct_raw)
@@ -80,7 +91,7 @@ def load_data():
         item = {
             "question": question,
             "question_norm": normalize(question),
-            "abbrs": build_abbrs(question),  # 🔥 nhiều abbr
+            "abbrs": build_abbrs(question),
             "correct": correct_list,
             "options": options
         }
@@ -98,25 +109,34 @@ def search(query):
     q = raw.replace(" ", "")
     words = raw.split()
 
+    # 🔥 chỉ lấy phần đầu để match viết tắt (fix ksdht)
+    q_short = q[:6]
+
     best = None
     best_score = 0
 
-    # ===== 1. MATCH ABBR (CHÍNH) =====
+    # ===== 1. MATCH ABBR (CỰC QUAN TRỌNG) =====
     for item in data:
         for abbr in item["abbrs"]:
-            score = SequenceMatcher(None, q, abbr).ratio()
+            score = SequenceMatcher(None, q_short, abbr).ratio()
 
-            if abbr.startswith(q):
-                score += 0.5
+            # match đầu câu (quan trọng nhất)
+            if abbr.startswith(q_short):
+                score += 0.7
 
-            if q in abbr:
+            # match prefix chính xác
+            if abbr[:len(q_short)] == q_short:
+                score += 0.7
+
+            # match chứa
+            if q_short in abbr:
                 score += 0.3
 
             if score > best_score:
                 best_score = score
                 best = item
 
-    if best_score > 0.7:
+    if best_score > 0.65:
         return best
 
     # ===== 2. CHẶN NGẮN =====
@@ -144,6 +164,7 @@ def search(query):
 
     return None
 
+# ===== FORMAT =====
 def format_msg(item):
     msg = f"📌 {item['question']}\n\n"
     correct_set = set(item["correct"])
@@ -156,6 +177,7 @@ def format_msg(item):
 
     return msg
 
+# ===== HANDLE =====
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     result = search(text)
@@ -166,6 +188,7 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(format_msg(result))
 
+# ===== RUN =====
 if __name__ == "__main__":
     if not TOKEN:
         print("❌ Thiếu TOKEN")
