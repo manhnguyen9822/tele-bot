@@ -8,20 +8,15 @@ import os
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
 
-# ===== TOKEN =====
 TOKEN = os.getenv("TOKEN")
-
-# ===== FILE =====
 FILE = "file.xlsx"
 
-# ===== STOP WORDS =====
 STOP_WORDS = {
-    "la", "va", "cua", "co", "trong", "cho", "mot", "cac",
-    "nhung", "duoc", "the", "nao", "sau", "day", "voi", "tu",
-    "den", "khi", "neu", "thi", "do", "nay", "kia", "gi", "nhu"
+    "la","va","cua","co","trong","cho","mot","cac","nhung",
+    "duoc","the","nao","sau","day","voi","tu","den","khi",
+    "neu","thi","do","nay","kia","gi","nhu","cac","nhung"
 }
 
-# ===== NORMALIZE =====
 def normalize(text):
     text = str(text).lower()
     text = unicodedata.normalize('NFD', text)
@@ -29,30 +24,32 @@ def normalize(text):
     text = re.sub(r'[^a-z0-9 ]', '', text)
     return text
 
-# ===== VIẾT TẮT THÔNG MINH =====
-def get_abbr(text):
-    words = normalize(text).split()
-
-    # bỏ stop words
-    filtered = [w for w in words if w not in STOP_WORDS]
-
-    if not filtered:
-        filtered = words
-
-    return ''.join(w[0] for w in filtered if w)
-
-# ===== XÓA HTML =====
 def clean_html(text):
     return re.sub(r'<.*?>', '', str(text))
 
-# ===== LOAD DATA =====
-def load_data():
-    if not os.path.exists(FILE):
-        print("❌ Không tìm thấy file.xlsx")
-        return []
+# ===== TẠO NHIỀU DẠNG VIẾT TẮT =====
+def build_abbrs(text):
+    words = normalize(text).split()
 
+    # 1. full
+    abbr_full = ''.join(w[0] for w in words if w)
+
+    # 2. bỏ stop words
+    filtered = [w for w in words if w not in STOP_WORDS]
+    abbr_filtered = ''.join(w[0] for w in filtered if w)
+
+    # 3. chỉ từ quan trọng (dài)
+    keywords = [w for w in filtered if len(w) >= 4]
+    if not keywords:
+        keywords = filtered
+    abbr_keywords = ''.join(w[0] for w in keywords if w)
+
+    return {abbr_full, abbr_filtered, abbr_keywords}
+
+def load_data():
     df = pd.read_excel(FILE)
     data = []
+
     letters = list(string.ascii_uppercase)
 
     for _, row in df.iterrows():
@@ -63,30 +60,27 @@ def load_data():
             if "Đáp án" in col and col != "Đáp án đúng":
                 val = row[col]
                 if pd.notna(val):
-                    letter = letters[idx]
-                    options[letter] = str(val)
+                    options[letters[idx]] = str(val)
                     idx += 1
 
         question = clean_html(row["Câu hỏi"])
 
-        # ===== MULTI ANSWER =====
         correct_raw = str(row["Đáp án đúng"]).strip()
         correct_list = []
         parts = re.split(r"[,\s;]+", correct_raw)
 
         for p in parts:
             if p.isdigit():
-                index = int(p) - 1
-                if 0 <= index < len(options):
-                    correct_list.append(letters[index])
+                i = int(p) - 1
+                if 0 <= i < len(options):
+                    correct_list.append(letters[i])
             else:
                 correct_list.append(p.upper())
 
         item = {
-            "keyword": normalize(row.get("keyword", "")),
             "question": question,
             "question_norm": normalize(question),
-            "abbr": get_abbr(question),  # 🔥 viết tắt thông minh
+            "abbrs": build_abbrs(question),  # 🔥 nhiều abbr
             "correct": correct_list,
             "options": options
         }
@@ -98,64 +92,60 @@ def load_data():
 
 data = load_data()
 
-# ===== SIMILARITY =====
-def similarity(a, b):
-    return SequenceMatcher(None, a, b).ratio()
-
 # ===== SEARCH =====
 def search(query):
     raw = normalize(query)
-    query_norm = raw.replace(" ", "")
+    q = raw.replace(" ", "")
     words = raw.split()
-
-    # ===== ƯU TIÊN VIẾT TẮT (SMART MATCH) =====
-    for item in data:
-        abbr = item["abbr"]
-
-        if query_norm == abbr:
-            return item
-
-        if query_norm in abbr or abbr.startswith(query_norm):
-            return item
-
-    # ===== CHẶN NGẮN =====
-    if len(words) <= 2:
-        return None
 
     best = None
     best_score = 0
 
+    # ===== 1. MATCH ABBR (CHÍNH) =====
     for item in data:
-        score = 0
+        for abbr in item["abbrs"]:
+            score = SequenceMatcher(None, q, abbr).ratio()
 
-        if item["keyword"] and raw == item["keyword"]:
-            return item
+            if abbr.startswith(q):
+                score += 0.5
 
-        score += similarity(raw, item["question_norm"]) * 2
+            if q in abbr:
+                score += 0.3
 
-        match_count = sum(1 for w in words if w in item["question_norm"])
-        if words:
-            score += (match_count / len(words)) * 1.5
+            if score > best_score:
+                best_score = score
+                best = item
 
-        if any(w in item["question_norm"] for w in words[:2]):
-            score += 0.3
+    if best_score > 0.7:
+        return best
 
-        if len(words) <= 3:
-            score *= 0.7
+    # ===== 2. CHẶN NGẮN =====
+    if len(words) <= 2:
+        return None
+
+    # ===== 3. MATCH CÂU =====
+    best = None
+    best_score = 0
+
+    for item in data:
+        question = item["question_norm"]
+
+        score = SequenceMatcher(None, raw, question).ratio() * 2
+
+        match_count = sum(1 for w in words if w in question)
+        score += (match_count / len(words)) * 2
 
         if score > best_score:
             best_score = score
             best = item
 
-    if best_score > 0.65:
+    if best_score > 0.7:
         return best
 
     return None
 
-# ===== FORMAT =====
 def format_msg(item):
     msg = f"📌 {item['question']}\n\n"
-
     correct_set = set(item["correct"])
 
     for k, v in item["options"].items():
@@ -166,28 +156,16 @@ def format_msg(item):
 
     return msg
 
-# ===== HANDLE =====
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
-
     result = search(text)
 
     if result is None:
-        if len(text.split()) <= 2:
-            await update.message.reply_text("⚠️ Nhập rõ hơn hoặc dùng viết tắt (vd: cttt)")
-        else:
-            await update.message.reply_text("❌ Không tìm thấy câu phù hợp")
+        await update.message.reply_text("⚠️ Nhập rõ hơn hoặc viết tắt (vd: cttt)")
         return
 
-    msg = format_msg(result)
+    await update.message.reply_text(format_msg(result))
 
-    if len(msg) > 4000:
-        for i in range(0, len(msg), 4000):
-            await update.message.reply_text(msg[i:i+4000])
-    else:
-        await update.message.reply_text(msg)
-
-# ===== RUN =====
 if __name__ == "__main__":
     if not TOKEN:
         print("❌ Thiếu TOKEN")
@@ -195,5 +173,5 @@ if __name__ == "__main__":
         app = ApplicationBuilder().token(TOKEN).build()
         app.add_handler(MessageHandler(filters.TEXT, handle))
 
-        print("🚀 Bot đang chạy 24/24...")
+        print("🚀 Bot đang chạy...")
         app.run_polling()
